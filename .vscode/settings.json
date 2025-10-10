@@ -1,0 +1,6 @@
+{
+    "nrf-connect.applications": [
+        "${workspaceFolder}\\sen0546",
+        "${workspaceFolder}\\blinky_pwm"
+    ]
+}
