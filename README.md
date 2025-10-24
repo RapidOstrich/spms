@@ -8,7 +8,7 @@ The SPMS project is designed to monitor environmental conditions for plant healt
 ## Directory Structure
 - **`blinky_pwn/`** – A copied sample project used to verify board functionality prior to system development.  
 - **`sen0546/`** – Contains setup code and driver software for interfacing with the **CHT832X** humidity and temperature sensor.
-- - **`nvm_write/`** – A small program to store data from the SEN0546 in nonvolatile memory.
+- **`nvm_write/`** – A small program to store data from the SEN0546 in nonvolatile memory.
 
 ## Platform
 - **Hardware:** Nordic nRF52DK / nRF52832  
