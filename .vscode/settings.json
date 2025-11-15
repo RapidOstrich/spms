@@ -1,8 +1,7 @@
 {
     "nrf-connect.applications": [
-        "${workspaceFolder}\\sen0546",
-        "${workspaceFolder}\\blinky_pwm",
-        "${workspaceFolder}\\nvm_write"
+        "${workspaceFolder}\\peripheral_lbs",
+        "${workspaceFolder}\\rev_0"
     ],
     "files.associations": {
         "i2c.h": "c",
