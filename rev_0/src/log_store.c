@@ -24,6 +24,8 @@ LOG_MODULE_REGISTER(log_store, LOG_LEVEL_INF);
 #define KEY_WRAP_FLAG   0x0002
 #define KEY_MIN_DATA    0x0100
 #define KEY_MAX_DATA    0x7FFF
+/* Single plant profile stored as a blob */
+#define KEY_PLANT_PROFILE  0x0003
 
 /* ----------- State ------------------------------------------------------ */
 
@@ -293,6 +295,44 @@ size_t log_store_capacity_records(size_t record_size) {
     return (per == 0) ? 0 : (usable / per);
 }
 
+int plant_profile_save(const struct plant_profile *p)
+{
+    if (!p) {
+        return -EINVAL;
+    }
+
+    struct log_store *ls = &g_ls;
+    int rc;
+
+    k_mutex_lock(&ls->lock, K_FOREVER);
+
+    rc = nvs_write(&ls->nvs, KEY_PLANT_PROFILE, p, sizeof(*p));
+    if (rc == (int)sizeof(*p)) {
+        rc = 0;
+    } else if (rc >= 0) {
+        rc = -EIO;  /* short write */
+    }
+
+    k_mutex_unlock(&ls->lock);
+    return rc;
+}
+
+int plant_profile_load(struct plant_profile *out)
+{
+    if (!out) {
+        return -EINVAL;
+    }
+
+    struct log_store *ls = &g_ls;
+
+    int rc = nvs_read(&ls->nvs, KEY_PLANT_PROFILE, out, sizeof(*out));
+    if (rc == (int)sizeof(*out)) {
+        return 0;
+    }
+
+    return (rc < 0) ? rc : -ENOENT;
+}
+
 __attribute__((weak))
 void log_store_format_record(const struct log_record *rec, uint16_t key)
 {
@@ -333,4 +373,49 @@ int log_store_dump_to_printf(void)
 
     LOG_INF("log_store: %d record(s)", count);
     return count > 0 ? count : -ENOENT;
+}
+
+int plant_profile_load_or_init(struct plant_profile *out)
+{
+    if (!out) {
+        return -EINVAL;
+    }
+
+    int rc = plant_profile_load(out);
+    if (rc == 0) {
+        LOG_INF("Plant profile loaded from NVS:");
+        LOG_INF("  Temp:   %d..%d (0.01 C)",
+                out->temp_min_x100, out->temp_max_x100);
+        LOG_INF("  RH:     %d..%d (0.01 %%RH)",
+                out->rh_min_x100, out->rh_max_x100);
+        LOG_INF("  Moist:  %d..%d mV",
+                out->moisture_min_mv, out->moisture_max_mv);
+        LOG_INF("  Lux:    %d..%d",
+                out->lux_min, out->lux_max);
+        return 0;
+    }
+
+    LOG_WRN("No plant profile in NVS (rc=%d). Initializing defaults.", rc);
+
+    /* Example generic “house plant” defaults */
+    out->temp_min_x100     = 1800;  /* 18.00 °C */
+    out->temp_max_x100     = 2800;  /* 28.00 °C */
+
+    out->rh_min_x100       = 4000;  /* 40.00 %RH */
+    out->rh_max_x100       = 7000;  /* 70.00 %RH */
+
+    out->moisture_min_mv   = 1000;
+    out->moisture_max_mv   = 3000;
+
+    out->lux_min           = 500;
+    out->lux_max           = 30000;
+
+    rc = plant_profile_save(out);
+    if (rc == 0) {
+        LOG_INF("Default plant profile saved to NVS.");
+    } else {
+        LOG_ERR("Failed to save default plant profile (rc=%d)", rc);
+    }
+
+    return rc;
 }
