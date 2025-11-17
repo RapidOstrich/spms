@@ -1,6 +1,7 @@
 #include "sen0390.h"
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <errno.h>
 
 LOG_MODULE_REGISTER(sen0390, LOG_LEVEL_INF);
 
@@ -10,11 +11,28 @@ LOG_MODULE_REGISTER(sen0390, LOG_LEVEL_INF);
 /*
  * TEMPORARY calibration:
  *   Tune these after you measure R_A / R_B in real conditions.
+ *
+ * L_A / L_B:   lux values at two reference points
+ * R_A / R_B:   raw sensor counts measured at those lux levels
+ *
+ * The current values are placeholders that give you a reasonable
+ * mapping shape. Once you have real data (e.g. with a lux meter),
+ * update R_A/R_B and L_A/L_B accordingly.
  */
 static const int32_t  L_A = 10;       /* approx lux at low reference */
 static const int32_t  L_B = 20000;    /* approx lux at high reference */
 static const uint32_t R_A = 1100U;    /* ~your current dim-room readings */
 static const uint32_t R_B = 50000U;   /* placeholder, tune after bright measurement */
+
+/* Reasonable raw range guard:
+ * SEN0390 appears to use up to 24 bits for its result.
+ * Treat anything with the top 8 bits set as clearly bogus.
+ */
+#define SEN0390_RAW_MAX_VALID   (0x00FFFFFFU)   /* 16,777,215 */
+
+/* ------------------------------------------------------------------------- */
+/* Raw reading API                                                           */
+/* ------------------------------------------------------------------------- */
 
 int query_sen0390(const struct i2c_dt_spec *i2c, uint32_t *lux_raw)
 {
@@ -55,10 +73,22 @@ int query_sen0390(const struct i2c_dt_spec *i2c, uint32_t *lux_raw)
                ((uint32_t)read_buf[2] << 16) |
                ((uint32_t)read_buf[3] << 24);
 
+    /* Sanity check: guard against obviously bogus values */
+    if (*lux_raw > SEN0390_RAW_MAX_VALID) {
+        LOG_WRN("SEN0390: raw value out of expected range (%u > %u); ignoring",
+                (unsigned int)*lux_raw,
+                (unsigned int)SEN0390_RAW_MAX_VALID);
+        return -EIO;
+    }
+
     LOG_DBG("Combined lux_raw = %u", (unsigned int)*lux_raw);
 
     return 0;
 }
+
+/* ------------------------------------------------------------------------- */
+/* Raw -> lux conversion                                                     */
+/* ------------------------------------------------------------------------- */
 
 int32_t sen0390_raw_to_lux(uint32_t lux_raw)
 {
@@ -67,6 +97,7 @@ int32_t sen0390_raw_to_lux(uint32_t lux_raw)
         return 0;
     }
 
+    /* Clamp into [L_A, L_B] range for out-of-range raw values */
     if (lux_raw <= R_A) {
         return L_A;
     }
@@ -74,6 +105,7 @@ int32_t sen0390_raw_to_lux(uint32_t lux_raw)
         return L_B;
     }
 
+    /* Linear interpolation between (R_A → L_A) and (R_B → L_B) */
     int64_t num   = (int64_t)(lux_raw - R_A) * (L_B - L_A);
     int64_t denom = (int64_t)(R_B - R_A);
 

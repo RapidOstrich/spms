@@ -36,27 +36,40 @@ static const struct i2c_dt_spec sen0546_i2c = I2C_DT_SPEC_GET(CHT832X_NODE);
 /* Lux filtering state                                                       */
 /* ------------------------------------------------------------------------- */
 
-static uint32_t lux_filtered       = 0;
-static bool     lux_filtered_valid = false;
+static int32_t lux_filtered        = 0;
+static bool    lux_filtered_valid  = false;
 
 static void update_lux_filtered(uint32_t sample)
 {
+    int32_t s = (int32_t)sample;
+
+    /* First valid sample: just seed the filter */
     if (!lux_filtered_valid) {
-        lux_filtered = sample;
+        lux_filtered = s;
         lux_filtered_valid = true;
         return;
     }
 
+    /* Compute signed difference */
+    int32_t diff = s - lux_filtered;
+
     /* Simple IIR filter:
-     * Normal case: alpha = 1/4
-     * Outlier case (>2x or <1/2): alpha = 1/16
+     *  - Normal case: alpha = 1/4
+     *  - Outlier case (>2x or <1/2): alpha = 1/16
      */
-    if (sample > 2U * lux_filtered || sample * 2U < lux_filtered) {
+    int32_t abs_diff = (diff >= 0) ? diff : -diff;
+
+    if (abs_diff > (lux_filtered >> 1)) {
         /* Suspect spike/dip: blend in slowly */
-        lux_filtered += (sample - lux_filtered) / 16U;
+        lux_filtered += diff / 16;
     } else {
         /* Normal update */
-        lux_filtered += (sample - lux_filtered) / 4U;
+        lux_filtered += diff / 4;
+    }
+
+    /* Clamp to non-negative range just in case */
+    if (lux_filtered < 0) {
+        lux_filtered = 0;
     }
 }
 
@@ -122,16 +135,19 @@ int spms_sensors_update(const struct plant_profile *profile,
 
     int16_t  temp_c_x100 = (int16_t)(temp_c * 100.0f);
     uint16_t rh_x100     = (uint16_t)(rh * 100.0f);
-    int32_t  lux_est     = sen0390_raw_to_lux(lux_filtered);
+
+    /* Compute lux_est from the (possibly signed) filtered value */
+    uint32_t lux_filtered_u = (lux_filtered < 0) ? 0U : (uint32_t)lux_filtered;
+    int32_t  lux_est        = sen0390_raw_to_lux(lux_filtered_u);
 
     /* Fill snapshot */
     out->temp_c_x100  = temp_c_x100;
     out->rh_x100      = rh_x100;
     out->lux_raw      = lux_raw_local;
-    out->lux_filtered = lux_filtered;
+    out->lux_filtered = lux_filtered_u;   // stays uint32_t in the struct
     out->lux_est      = lux_est;
 
-    LOG_INF("Sensor: T = %d.%02d °C, RH = %u.%02u %% "
+    LOG_INF("Sensor: T = %d.%02d C, RH = %u.%02u %% "
             "LUX(raw) = %u filt = %u est = %ld lux",
             temp_c_x100 / 100,
             (temp_c_x100 >= 0 ? temp_c_x100 % 100 : -(temp_c_x100 % 100)),
