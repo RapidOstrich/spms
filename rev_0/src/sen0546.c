@@ -2,7 +2,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
-LOG_MODULE_REGISTER(sen0546, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(SEN0546, LOG_LEVEL_INF);
 
 int query_sen0546(
     const struct i2c_dt_spec *i2c,

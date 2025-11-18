@@ -1,9 +1,7 @@
 / {
-    zephyr_user: zephyr_user {
-        status = "okay";
-        /* Use ADC controller &adc, channel 0 */
-        io-channels = <&adc 0>;
-    };
+	zephyr,user {
+		io-channels = <&adc 0>;
+	};
 };
 
 &i2c0 {
@@ -15,17 +13,17 @@
     pinctrl-1 = <&i2c0_sleep>;
     pinctrl-names = "default", "sleep";
     
-    cht832x: cht832x@44 {
-        compatible = "i2c-device";
-        reg = <0x44>;
-        label = "CHT832X";
-    };
-
     sen0390: sen0390@4a {
         compatible = "i2c-device";
         reg = <0x4a>;
         label = "SEN0390";
         status = "okay";
+    };
+
+    sen0546: sen0546@44 {
+        compatible = "i2c-device";
+        reg = <0x44>;
+        label = "SEN0546";
     };
 };
 

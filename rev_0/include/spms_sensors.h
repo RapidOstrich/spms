@@ -20,6 +20,7 @@ struct spms_sensor_snapshot {
     uint32_t lux_raw;         /**< Latest raw lux code from SEN0390 */
     uint32_t lux_filtered;    /**< Filtered lux code (for decisions) */
     int32_t  lux_est;         /**< Estimated illuminance in lux */
+    int32_t  moisture_mv;     /**< Moisture sensor output, millivolts */
 };
 
 /**

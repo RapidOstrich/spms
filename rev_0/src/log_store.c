@@ -8,7 +8,7 @@
 #include <inttypes.h>
 #include <zephyr/logging/log.h>
 #include "log_store.h"
-LOG_MODULE_REGISTER(log_store, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(LOG_STORE, LOG_LEVEL_INF);
 
 /* ----------- Config (tune if needed) ----------------------------------- */
 

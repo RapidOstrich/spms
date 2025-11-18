@@ -8,7 +8,7 @@
 /* Logging module                                                            */
 /* ------------------------------------------------------------------------- */
 
-LOG_MODULE_REGISTER(spms_main, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(SPMS_MAIN, LOG_LEVEL_INF);
 
 /* ------------------------------------------------------------------------- */
 /* Board Config Dependencies                                                 */
@@ -72,7 +72,8 @@ static int log_current_record(void)
     rec.t_raw       = g_sensors.temp_c_x100;
     rec.rh_raw      = g_sensors.rh_x100;
     rec.lux_raw     = g_sensors.lux_raw;
-    rec.moisture_mv = 0; /* will be filled when moisture integration is done */
+    rec.moisture_mv = g_sensors.moisture_mv;
+
 
     int rc = log_store_append(&rec, &key);
     if (rc == 0) {

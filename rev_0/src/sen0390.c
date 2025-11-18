@@ -3,7 +3,7 @@
 #include <zephyr/logging/log.h>
 #include <errno.h>
 
-LOG_MODULE_REGISTER(sen0390, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(SEN0390, LOG_LEVEL_INF);
 
 /* ------------------------------------------------------------------------- */
 /* Lux calibration (raw -> estimated lux)                                    */

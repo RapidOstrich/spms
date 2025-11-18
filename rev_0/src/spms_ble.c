@@ -18,7 +18,7 @@
 #include "log_store.h"   /* struct plant_profile, plant_profile_save() */
 #include "spms_ble.h"
 
-LOG_MODULE_REGISTER(spms_ble, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(SPMS_BLE, LOG_LEVEL_INF);
 
 /* ------------------------------------------------------------------------- */
 /* External plant profile (defined in main.c)                                */

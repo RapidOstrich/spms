@@ -5,7 +5,7 @@
 
 #include "sen0114.h"
 
-LOG_MODULE_REGISTER(sen0114, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(SEN0114, LOG_LEVEL_INF);
 
 int sen0114_init(const struct adc_dt_spec *adc_dt)
 {
