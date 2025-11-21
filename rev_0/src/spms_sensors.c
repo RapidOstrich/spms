@@ -165,16 +165,16 @@ int spms_sensors_update(const struct plant_profile *profile,
     out->lux_est      = lux_est;
     out->moisture_mv  = moisture_mv;
 
-LOG_INF("Temp. = %d.%02d C, RH = %u.%02u %%, "
-        "LUX(raw|filter|est.) = (%u|%u|%ld) lux, Moisture = %d mV",
-        temp_c_x100 / 100,
-        (temp_c_x100 >= 0 ? temp_c_x100 % 100 : -(temp_c_x100 % 100)),
-        rh_x100 / 100,
-        rh_x100 % 100,
-        (unsigned int)lux_raw_local,
-        (unsigned int)lux_filtered,
-        (long)lux_est,
-        moisture_mv);
+    LOG_INF("Temp. = %d.%02d C, RH = %u.%02u %%, "
+            "LUX(raw|filter|est.) = (%u|%u|%ld) lux, Moisture = %d mV",
+            temp_c_x100 / 100,
+            (temp_c_x100 >= 0 ? temp_c_x100 % 100 : -(temp_c_x100 % 100)),
+            rh_x100 / 100,
+            rh_x100 % 100,
+            (unsigned int)lux_raw_local,
+            (unsigned int)lux_filtered,
+            (long)lux_est,
+            moisture_mv);
 
     /* --------- Compare against plant profile ---------------------------- */
 

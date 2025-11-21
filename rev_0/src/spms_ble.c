@@ -15,7 +15,7 @@
 #include <zephyr/drivers/gpio.h>
 
 /* Local modules */
-#include "log_store.h"   /* struct plant_profile, plant_profile_save() */
+#include "log_store.h"   /* struct plant_profile, log_iter_*, plant_profile_save() */
 #include "spms_ble.h"
 
 LOG_MODULE_REGISTER(SPMS_BLE, LOG_LEVEL_INF);
@@ -45,6 +45,23 @@ static bool     rh_notify_enabled;
 /* Latest sensor values (cached for GATT reads/notifications) */
 static int16_t  last_temp_c_x100;
 static uint16_t last_rh_x100;
+
+/* ------------------------------------------------------------------------- */
+/* Log dump state                                                            */
+/* ------------------------------------------------------------------------- */
+
+static bool            log_data_notify_enabled;
+static bool            log_dump_active;
+static struct log_iter log_dump_it;
+static struct log_record log_dump_rec;
+
+/* How many records to send per work-cycle; tune as needed */
+#define LOG_DUMP_RECORDS_PER_CYCLE  4
+
+static void log_dump_work_handler(struct k_work *work);
+
+/* Work item used to pump out notifications asynchronously */
+K_WORK_DELAYABLE_DEFINE(log_dump_work, log_dump_work_handler);
 
 /* ------------------------------------------------------------------------- */
 /* Advertising data / UUIDs / GATT services                                  */
@@ -96,7 +113,7 @@ static struct bt_uuid_128 spms_rh_uuid = BT_UUID_INIT_128(
 /* Plant profile service UUIDs:
  *
  * Service:  12345679-1234-5678-1234-56789abcdef0
- * Char:     12345679-1234-5678-1234-56789abcdef1
+ * Profile:  12345679-1234-5678-1234-56789abcdef1
  */
 
 #define BT_UUID_SPMS_PLANT_SERVICE_VAL \
@@ -107,38 +124,62 @@ static struct bt_uuid_128 spms_rh_uuid = BT_UUID_INIT_128(
 
 static struct bt_uuid_128 spms_plant_service_uuid = BT_UUID_INIT_128(
     BT_UUID_SPMS_PLANT_SERVICE_VAL);
-
 static struct bt_uuid_128 spms_plant_profile_uuid = BT_UUID_INIT_128(
     BT_UUID_SPMS_PLANT_PROFILE_CHAR_VAL);
 
-/* --- Generic read helpers ------------------------------------------------ */
+/* Log dump service UUIDs:
+ *
+ * Service:  1234567A-1234-5678-1234-56789abcdef0
+ * Ctrl chr: 1234567A-1234-5678-1234-56789abcdef1
+ * Data chr: 1234567A-1234-5678-1234-56789abcdef2
+ */
+
+#define BT_UUID_SPMS_LOG_SERVICE_VAL \
+    BT_UUID_128_ENCODE(0x1234567A, 0x1234, 0x5678, 0x1234, 0x56789abcdef0ULL)
+
+#define BT_UUID_SPMS_LOG_CTRL_CHAR_VAL \
+    BT_UUID_128_ENCODE(0x1234567A, 0x1234, 0x5678, 0x1234, 0x56789abcdef1ULL)
+
+#define BT_UUID_SPMS_LOG_DATA_CHAR_VAL \
+    BT_UUID_128_ENCODE(0x1234567A, 0x1234, 0x5678, 0x1234, 0x56789abcdef2ULL)
+
+static struct bt_uuid_128 spms_log_service_uuid = BT_UUID_INIT_128(
+    BT_UUID_SPMS_LOG_SERVICE_VAL);
+static struct bt_uuid_128 spms_log_ctrl_uuid = BT_UUID_INIT_128(
+    BT_UUID_SPMS_LOG_CTRL_CHAR_VAL);
+static struct bt_uuid_128 spms_log_data_uuid = BT_UUID_INIT_128(
+    BT_UUID_SPMS_LOG_DATA_CHAR_VAL);
+
+/* ------------------------------------------------------------------------- */
+/* Generic GATT read helpers                                                 */
+/* ------------------------------------------------------------------------- */
 
 static ssize_t read_u8(struct bt_conn *conn,
                        const struct bt_gatt_attr *attr,
-                       void *buf, uint16_t len, uint16_t offset)
+                       void *buf, uint16_t len,
+                       uint16_t offset)
 {
     const uint8_t *value = attr->user_data;
-
     return bt_gatt_attr_read(conn, attr, buf, len, offset,
                              value, sizeof(*value));
 }
 
 static ssize_t read_s16(struct bt_conn *conn,
                         const struct bt_gatt_attr *attr,
-                        void *buf, uint16_t len, uint16_t offset)
+                        void *buf, uint16_t len,
+                        uint16_t offset)
 {
     const int16_t *value = attr->user_data;
-
     return bt_gatt_attr_read(conn, attr, buf, len, offset,
                              value, sizeof(*value));
 }
 
 static ssize_t read_u16(struct bt_conn *conn,
                         const struct bt_gatt_attr *attr,
-                        void *buf, uint16_t len, uint16_t offset)
+                        void *buf, uint16_t len,
+                        uint16_t offset)
 {
     const uint16_t *value = attr->user_data;
-
     return bt_gatt_attr_read(conn, attr, buf, len, offset,
                              value, sizeof(*value));
 }
@@ -149,7 +190,8 @@ static ssize_t read_u16(struct bt_conn *conn,
 
 static ssize_t plant_profile_read(struct bt_conn *conn,
                                   const struct bt_gatt_attr *attr,
-                                  void *buf, uint16_t len, uint16_t offset)
+                                  void *buf, uint16_t len,
+                                  uint16_t offset)
 {
     const struct plant_profile *p = attr->user_data;
 
@@ -164,19 +206,13 @@ static ssize_t plant_profile_write(struct bt_conn *conn,
 {
     struct plant_profile *p = attr->user_data;
 
-    if (offset != 0) {
+    if (offset + len > sizeof(*p)) {
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
     }
 
-    if (len != sizeof(*p)) {
-        LOG_WRN("Plant profile write: invalid length %u (expected %u)",
-                len, (unsigned)sizeof(*p));
-        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
-    }
+    memcpy(((uint8_t *)p) + offset, buf, len);
 
-    memcpy(p, buf, sizeof(*p));
-
-    LOG_INF("Plant profile updated via BLE:");
+    LOG_INF("Plant profile written:");
     LOG_INF("  Temp:   %d..%d (0.01 C)",
             p->temp_min_x100, p->temp_max_x100);
     LOG_INF("  RH:     %d..%d (0.01 %%RH)",
@@ -242,26 +278,96 @@ static void rh_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
             rh_notify_enabled ? "enabled" : "disabled");
 }
 
+static void log_data_ccc_cfg_changed(const struct bt_gatt_attr *attr,
+                                     uint16_t value)
+{
+    log_data_notify_enabled = (value == BT_GATT_CCC_NOTIFY);
+    LOG_INF("Log data notifications %s",
+            log_data_notify_enabled ? "enabled" : "disabled");
+
+    if (!log_data_notify_enabled) {
+        /* If notifications are turned off, stop any ongoing dump */
+        log_dump_active = false;
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Log Control characteristic                                                */
+/* ------------------------------------------------------------------------- */
+/* Log Control commands:
+ *   0x00 = stop/abort any ongoing dump
+ *   0x01 = start full dump from oldest to newest
+ */
+static ssize_t log_ctrl_write(struct bt_conn *conn,
+                              const struct bt_gatt_attr *attr,
+                              const void *buf, uint16_t len,
+                              uint16_t offset, uint8_t flags)
+{
+    const uint8_t *data = buf;
+
+    if (offset != 0) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+    }
+    if (len < 1) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+
+    uint8_t cmd = data[0];
+
+    switch (cmd) {
+    case 0x00: /* stop */
+        LOG_INF("Log dump: stop requested");
+        log_dump_active = false;
+        break;
+
+    case 0x01: /* start full dump */
+    {
+        int rc = log_iter_begin(&log_dump_it);
+        if (rc == -ENOENT) {
+            LOG_INF("Log dump: no records to dump");
+            log_dump_active = false;
+        } else if (rc) {
+            LOG_ERR("log_iter_begin failed (rc=%d)", rc);
+            log_dump_active = false;
+        } else {
+            LOG_INF("Log dump: starting from oldest record");
+            log_dump_active = true;
+
+            /* Kick the work item immediately */
+            k_work_schedule(&log_dump_work, K_NO_WAIT);
+        }
+        break;
+    }
+
+    default:
+        LOG_WRN("Log ctrl: unknown command 0x%02x", cmd);
+        return BT_GATT_ERR(BT_ATT_ERR_WRITE_NOT_PERMITTED);
+    }
+
+    return len;
+}
+
 /* ------------------------------------------------------------------------- */
 /* GATT service definitions                                                  */
 /* ------------------------------------------------------------------------- */
 /* Attribute indices (for reference):
- *   0: Primary Service
+ *   spms_svc:
+ *     0: Primary Service
  *
- *   1: Debug Characteristic Declaration
- *   2: Debug Characteristic Value
- *   3: Debug CUD
- *   4: Debug CCC
+ *     1: Debug Characteristic Declaration
+ *     2: Debug Characteristic Value
+ *     3: Debug CUD
+ *     4: Debug CCC
  *
- *   5: Temp Characteristic Declaration
- *   6: Temp Characteristic Value
- *   7: Temp CUD
- *   8: Temp CCC
+ *     5: Temp Characteristic Declaration
+ *     6: Temp Characteristic Value
+ *     7: Temp CUD
+ *     8: Temp CCC
  *
- *   9: RH Characteristic Declaration
- *  10: RH Characteristic Value
- *  11: RH CUD
- *  12: RH CCC
+ *     9:  RH Characteristic Declaration
+ *    10:  RH Characteristic Value
+ *    11:  RH CUD
+ *    12:  RH CCC
  */
 
 BT_GATT_SERVICE_DEFINE(spms_svc,
@@ -315,6 +421,92 @@ BT_GATT_SERVICE_DEFINE(spms_plant_svc,
 
     BT_GATT_CUD("Plant Profile", BT_GATT_PERM_READ)
 );
+
+/* Log Dump GATT Service
+ *
+ * Attribute layout (for reference):
+ *   0: Primary Service
+ *
+ *   1: Log Ctrl Characteristic Declaration
+ *   2: Log Ctrl Characteristic Value
+ *   3: Log Ctrl CUD
+ *
+ *   4: Log Data Characteristic Declaration
+ *   5: Log Data Characteristic Value
+ *   6: Log Data CUD
+ *   7: Log Data CCC
+ */
+#define SPMS_LOG_DATA_VAL_ATTR_INDEX  5
+
+BT_GATT_SERVICE_DEFINE(spms_log_svc,
+    BT_GATT_PRIMARY_SERVICE(&spms_log_service_uuid),
+
+    /* Log Control characteristic: write-only */
+    BT_GATT_CHARACTERISTIC(&spms_log_ctrl_uuid.uuid,
+                           BT_GATT_CHRC_WRITE,
+                           BT_GATT_PERM_WRITE,
+                           NULL,            /* no read */
+                           log_ctrl_write,  /* write handler */
+                           NULL),
+    BT_GATT_CUD("Log Control", BT_GATT_PERM_READ),
+
+    /* Log Data characteristic: notify-only (20-byte struct log_record) */
+    BT_GATT_CHARACTERISTIC(&spms_log_data_uuid.uuid,
+                           BT_GATT_CHRC_NOTIFY,
+                           BT_GATT_PERM_NONE,
+                           NULL,    /* no read; use notifications */
+                           NULL,
+                           NULL),
+    BT_GATT_CUD("Log Data", BT_GATT_PERM_READ),
+    BT_GATT_CCC(log_data_ccc_cfg_changed,
+                BT_GATT_PERM_READ | BT_GATT_PERM_WRITE)
+);
+
+/* ------------------------------------------------------------------------- */
+/* Log dump work handler                                                     */
+/* ------------------------------------------------------------------------- */
+
+static void log_dump_work_handler(struct k_work *work)
+{
+    int rc;
+    int sent = 0;
+
+    ARG_UNUSED(work);
+
+    if (!log_dump_active || !log_data_notify_enabled) {
+        return;
+    }
+
+    while (sent < LOG_DUMP_RECORDS_PER_CYCLE) {
+        uint16_t key = 0;
+
+        rc = log_iter_next(&log_dump_it, &log_dump_rec, &key);
+        if (rc == -ENOENT) {
+            LOG_INF("Log dump: finished streaming records");
+            log_dump_active = false;
+            return;
+        } else if (rc) {
+            LOG_ERR("log_iter_next failed (rc=%d), aborting dump", rc);
+            log_dump_active = false;
+            return;
+        }
+
+        rc = bt_gatt_notify(NULL,
+                            &spms_log_svc.attrs[SPMS_LOG_DATA_VAL_ATTR_INDEX],
+                            &log_dump_rec,
+                            sizeof(log_dump_rec));
+        if (rc) {
+            LOG_WRN("bt_gatt_notify(log) failed (rc=%d), aborting dump", rc);
+            log_dump_active = false;
+            return;
+        }
+
+        sent++;
+    }
+
+    /* Schedule the next batch a bit later to avoid hogging the link */
+    k_work_schedule(&log_dump_work, K_MSEC(50));
+}
 
 /* ------------------------------------------------------------------------- */
 /* Connection callbacks                                                      */
