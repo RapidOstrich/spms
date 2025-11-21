@@ -1,3 +1,11 @@
+/**
+ * @file
+ * @brief SEN0114 moisture sensor (ADC-based) implementation.
+ *
+ * Provides initialization and sampling routines for the SEN0114 moisture
+ * sensor using Zephyr's ADC device-tree helpers.
+ */
+
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/adc.h>
@@ -7,11 +15,15 @@
 
 LOG_MODULE_REGISTER(SEN0114, LOG_LEVEL_INF);
 
+/* ------------------------------------------------------------------------- */
+/* Initialization                                                            */
+/* ------------------------------------------------------------------------- */
+
 int sen0114_init(const struct adc_dt_spec *adc_dt)
 {
     int err;
     struct adc_sequence sequence = { 0 };
-    int16_t dummy_buf;  /* just to satisfy adc_sequence_init_dt */
+    int16_t dummy_buf;  /* Minimal buffer required by adc_sequence_init_dt() */
 
     if (adc_dt == NULL) {
         return -EINVAL;
@@ -34,10 +46,10 @@ int sen0114_init(const struct adc_dt_spec *adc_dt)
         return err;
     }
 
-    sequence.buffer = &dummy_buf;
+    sequence.buffer      = &dummy_buf;
     sequence.buffer_size = sizeof(dummy_buf);
 
-    /* Optional sanity check read */
+    /* Optional sanity-check read to validate the configuration. */
     err = adc_read_dt(adc_dt, &sequence);
     if (err < 0) {
         LOG_ERR("Moisture: initial adc_read_dt failed (err %d)", err);
@@ -47,6 +59,10 @@ int sen0114_init(const struct adc_dt_spec *adc_dt)
     LOG_INF("Moisture: ADC channel initialized");
     return 0;
 }
+
+/* ------------------------------------------------------------------------- */
+/* Raw reading                                                               */
+/* ------------------------------------------------------------------------- */
 
 int query_sen0114_raw(const struct adc_dt_spec *adc_dt, int16_t *raw)
 {
@@ -63,7 +79,7 @@ int query_sen0114_raw(const struct adc_dt_spec *adc_dt, int16_t *raw)
         return err;
     }
 
-    sequence.buffer = raw;
+    sequence.buffer      = raw;
     sequence.buffer_size = sizeof(*raw);
 
     err = adc_read_dt(adc_dt, &sequence);
@@ -74,6 +90,10 @@ int query_sen0114_raw(const struct adc_dt_spec *adc_dt, int16_t *raw)
 
     return 0;
 }
+
+/* ------------------------------------------------------------------------- */
+/* Millivolt conversion                                                      */
+/* ------------------------------------------------------------------------- */
 
 int query_sen0114_mv(const struct adc_dt_spec *adc_dt, int *mv)
 {

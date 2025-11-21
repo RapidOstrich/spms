@@ -1,3 +1,16 @@
+/**
+ * @file
+ * @brief Bluetooth GATT services for the Smart Plant Monitoring System (SPMS).
+ *
+ * This module:
+ *   - Initializes the Bluetooth stack and starts connectable advertising
+ *   - Exposes a main SPMS service (debug, temperature, humidity)
+ *   - Exposes a plant profile service (read/write full plant_profile)
+ *   - Exposes a log dump service (control + streaming log records)
+ *   - Provides a 1 Hz tick hook for pushing notifications
+ *   - Optionally toggles a connection LED when a central is connected
+ */
+
 #include <stdint.h>
 #include <string.h>
 
@@ -50,17 +63,17 @@ static uint16_t last_rh_x100;
 /* Log dump state                                                            */
 /* ------------------------------------------------------------------------- */
 
-static bool            log_data_notify_enabled;
-static bool            log_dump_active;
-static struct log_iter log_dump_it;
+static bool             log_data_notify_enabled;
+static bool             log_dump_active;
+static struct log_iter  log_dump_it;
 static struct log_record log_dump_rec;
 
-/* How many records to send per work-cycle; tune as needed */
+/* How many records to send per work cycle; tune as needed. */
 #define LOG_DUMP_RECORDS_PER_CYCLE  4
 
 static void log_dump_work_handler(struct k_work *work);
 
-/* Work item used to pump out notifications asynchronously */
+/* Work item used to pump out notifications asynchronously. */
 K_WORK_DELAYABLE_DEFINE(log_dump_work, log_dump_work_handler);
 
 /* ------------------------------------------------------------------------- */
@@ -81,14 +94,14 @@ static const struct bt_data sd[] = {
     BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
 };
 
-/* Main SPMS service UUIDs:
+/*
+ * Main SPMS service UUIDs:
  *
  * Service:   12345678-1234-5678-1234-56789abcdef0
  * Debug chr: 12345678-1234-5678-1234-56789abcdef1
  * Temp chr:  12345678-1234-5678-1234-56789abcdef2
  * RH chr:    12345678-1234-5678-1234-56789abcdef3
  */
-
 #define BT_UUID_SPMS_SERVICE_VAL \
     BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcdef0ULL)
 
@@ -110,12 +123,12 @@ static struct bt_uuid_128 spms_temp_uuid = BT_UUID_INIT_128(
 static struct bt_uuid_128 spms_rh_uuid = BT_UUID_INIT_128(
     BT_UUID_SPMS_RH_CHAR_VAL);
 
-/* Plant profile service UUIDs:
+/*
+ * Plant profile service UUIDs:
  *
  * Service:  12345679-1234-5678-1234-56789abcdef0
  * Profile:  12345679-1234-5678-1234-56789abcdef1
  */
-
 #define BT_UUID_SPMS_PLANT_SERVICE_VAL \
     BT_UUID_128_ENCODE(0x12345679, 0x1234, 0x5678, 0x1234, 0x56789abcdef0ULL)
 
@@ -127,13 +140,13 @@ static struct bt_uuid_128 spms_plant_service_uuid = BT_UUID_INIT_128(
 static struct bt_uuid_128 spms_plant_profile_uuid = BT_UUID_INIT_128(
     BT_UUID_SPMS_PLANT_PROFILE_CHAR_VAL);
 
-/* Log dump service UUIDs:
+/*
+ * Log dump service UUIDs:
  *
  * Service:  1234567A-1234-5678-1234-56789abcdef0
  * Ctrl chr: 1234567A-1234-5678-1234-56789abcdef1
  * Data chr: 1234567A-1234-5678-1234-56789abcdef2
  */
-
 #define BT_UUID_SPMS_LOG_SERVICE_VAL \
     BT_UUID_128_ENCODE(0x1234567A, 0x1234, 0x5678, 0x1234, 0x56789abcdef0ULL)
 
@@ -160,6 +173,7 @@ static ssize_t read_u8(struct bt_conn *conn,
                        uint16_t offset)
 {
     const uint8_t *value = attr->user_data;
+
     return bt_gatt_attr_read(conn, attr, buf, len, offset,
                              value, sizeof(*value));
 }
@@ -170,6 +184,7 @@ static ssize_t read_s16(struct bt_conn *conn,
                         uint16_t offset)
 {
     const int16_t *value = attr->user_data;
+
     return bt_gatt_attr_read(conn, attr, buf, len, offset,
                              value, sizeof(*value));
 }
@@ -180,6 +195,7 @@ static ssize_t read_u16(struct bt_conn *conn,
                         uint16_t offset)
 {
     const uint16_t *value = attr->user_data;
+
     return bt_gatt_attr_read(conn, attr, buf, len, offset,
                              value, sizeof(*value));
 }
@@ -213,13 +229,13 @@ static ssize_t plant_profile_write(struct bt_conn *conn,
     memcpy(((uint8_t *)p) + offset, buf, len);
 
     LOG_INF("Plant profile written:");
-    LOG_INF("  Temp:   %d..%d (0.01 C)",
+    LOG_INF("  Temp:   %d.%d (0.01 C)",
             p->temp_min_x100, p->temp_max_x100);
-    LOG_INF("  RH:     %d..%d (0.01 %%RH)",
+    LOG_INF("  RH:     %d.%d (0.01 %%RH)",
             p->rh_min_x100, p->rh_max_x100);
-    LOG_INF("  Moist:  %d..%d mV",
+    LOG_INF("  Moist:  %d.%d mV",
             p->moisture_min_mv, p->moisture_max_mv);
-    LOG_INF("  Lux:    %d..%d",
+    LOG_INF("  Lux:    %d.%d",
             p->lux_min, p->lux_max);
 
     int rc = plant_profile_save(p);
@@ -257,21 +273,24 @@ static ssize_t debug_write(struct bt_conn *conn,
 /* CCC callbacks                                                             */
 /* ------------------------------------------------------------------------- */
 
-static void debug_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
+static void debug_ccc_cfg_changed(const struct bt_gatt_attr *attr,
+                                  uint16_t value)
 {
     debug_notify_enabled = (value == BT_GATT_CCC_NOTIFY);
     LOG_INF("Debug notifications %s",
             debug_notify_enabled ? "enabled" : "disabled");
 }
 
-static void temp_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
+static void temp_ccc_cfg_changed(const struct bt_gatt_attr *attr,
+                                 uint16_t value)
 {
     temp_notify_enabled = (value == BT_GATT_CCC_NOTIFY);
     LOG_INF("Temp notifications %s",
             temp_notify_enabled ? "enabled" : "disabled");
 }
 
-static void rh_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
+static void rh_ccc_cfg_changed(const struct bt_gatt_attr *attr,
+                               uint16_t value)
 {
     rh_notify_enabled = (value == BT_GATT_CCC_NOTIFY);
     LOG_INF("RH notifications %s",
@@ -286,7 +305,7 @@ static void log_data_ccc_cfg_changed(const struct bt_gatt_attr *attr,
             log_data_notify_enabled ? "enabled" : "disabled");
 
     if (!log_data_notify_enabled) {
-        /* If notifications are turned off, stop any ongoing dump */
+        /* If notifications are turned off, stop any ongoing dump. */
         log_dump_active = false;
     }
 }
@@ -294,7 +313,9 @@ static void log_data_ccc_cfg_changed(const struct bt_gatt_attr *attr,
 /* ------------------------------------------------------------------------- */
 /* Log Control characteristic                                                */
 /* ------------------------------------------------------------------------- */
-/* Log Control commands:
+
+/*
+ * Log Control commands:
  *   0x00 = stop/abort any ongoing dump
  *   0x01 = start full dump from oldest to newest
  */
@@ -333,7 +354,7 @@ static ssize_t log_ctrl_write(struct bt_conn *conn,
             LOG_INF("Log dump: starting from oldest record");
             log_dump_active = true;
 
-            /* Kick the work item immediately */
+            /* Kick the work item immediately. */
             k_work_schedule(&log_dump_work, K_NO_WAIT);
         }
         break;
@@ -350,7 +371,8 @@ static ssize_t log_ctrl_write(struct bt_conn *conn,
 /* ------------------------------------------------------------------------- */
 /* GATT service definitions                                                  */
 /* ------------------------------------------------------------------------- */
-/* Attribute indices (for reference):
+/*
+ * Attribute indices (for reference):
  *   spms_svc:
  *     0: Primary Service
  *
@@ -375,10 +397,10 @@ BT_GATT_SERVICE_DEFINE(spms_svc,
 
     /* Debug: read / write / notify */
     BT_GATT_CHARACTERISTIC(&spms_debug_uuid.uuid,
-                           BT_GATT_CHRC_READ |
+                           BT_GATT_CHRC_READ  |
                            BT_GATT_CHRC_WRITE |
                            BT_GATT_CHRC_NOTIFY,
-                           BT_GATT_PERM_READ |
+                           BT_GATT_PERM_READ  |
                            BT_GATT_PERM_WRITE,
                            read_u8, debug_write, &debug_value),
     BT_GATT_CUD("Debug Value", BT_GATT_PERM_READ),
@@ -407,7 +429,6 @@ BT_GATT_SERVICE_DEFINE(spms_svc,
 );
 
 /* Plant Profile GATT Service */
-
 BT_GATT_SERVICE_DEFINE(spms_plant_svc,
     BT_GATT_PRIMARY_SERVICE(&spms_plant_service_uuid),
 
@@ -422,7 +443,8 @@ BT_GATT_SERVICE_DEFINE(spms_plant_svc,
     BT_GATT_CUD("Plant Profile", BT_GATT_PERM_READ)
 );
 
-/* Log Dump GATT Service
+/*
+ * Log Dump GATT Service
  *
  * Attribute layout (for reference):
  *   0: Primary Service
@@ -450,11 +472,11 @@ BT_GATT_SERVICE_DEFINE(spms_log_svc,
                            NULL),
     BT_GATT_CUD("Log Control", BT_GATT_PERM_READ),
 
-    /* Log Data characteristic: notify-only (20-byte struct log_record) */
+    /* Log Data characteristic: notify-only (struct log_record) */
     BT_GATT_CHARACTERISTIC(&spms_log_data_uuid.uuid,
                            BT_GATT_CHRC_NOTIFY,
                            BT_GATT_PERM_NONE,
-                           NULL,    /* no read; use notifications */
+                           NULL,   /* no read; use notifications */
                            NULL,
                            NULL),
     BT_GATT_CUD("Log Data", BT_GATT_PERM_READ),
@@ -504,7 +526,7 @@ static void log_dump_work_handler(struct k_work *work)
         sent++;
     }
 
-    /* Schedule the next batch a bit later to avoid hogging the link */
+    /* Schedule the next batch later to avoid hogging the link. */
     k_work_schedule(&log_dump_work, K_MSEC(50));
 }
 
@@ -558,7 +580,7 @@ int spms_ble_init(const struct gpio_dt_spec *conn_led)
 
     LOG_INF("Bluetooth initialized");
 
-    err = bt_le_adv_start(BT_LE_ADV_CONN,
+    err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_2,
                           ad, ARRAY_SIZE(ad),
                           sd, ARRAY_SIZE(sd));
     if (err) {
@@ -573,27 +595,27 @@ int spms_ble_init(const struct gpio_dt_spec *conn_led)
 
 void spms_ble_tick_1s(int16_t temp_c_x100, uint16_t rh_x100)
 {
-    /* Update cached sensor values backing the GATT attributes */
+    /* Update cached sensor values backing the GATT attributes. */
     last_temp_c_x100 = temp_c_x100;
     last_rh_x100     = rh_x100;
 
-    /* Demo counter for debug characteristic */
+    /* Demo counter for debug characteristic. */
     debug_value++;
 
     if (debug_notify_enabled) {
-        /* Debug value at attr index 2 */
+        /* Debug value at attr index 2. */
         bt_gatt_notify(NULL, &spms_svc.attrs[2],
                        &debug_value, sizeof(debug_value));
     }
 
     if (temp_notify_enabled) {
-        /* Temp value at attr index 6 */
+        /* Temp value at attr index 6. */
         bt_gatt_notify(NULL, &spms_svc.attrs[6],
                        &last_temp_c_x100, sizeof(last_temp_c_x100));
     }
 
     if (rh_notify_enabled) {
-        /* RH value at attr index 10 */
+        /* RH value at attr index 10. */
         bt_gatt_notify(NULL, &spms_svc.attrs[10],
                        &last_rh_x100, sizeof(last_rh_x100));
     }

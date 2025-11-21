@@ -1,6 +1,17 @@
 #ifndef LOG_STORE_H
 #define LOG_STORE_H
 
+/**
+ * @file
+ * @brief Flash-backed log storage and plant profile persistence.
+ *
+ * This module provides:
+ *   - A compact on-flash record format for periodic sensor logs
+ *   - An iterator API to walk log records from oldest to newest
+ *   - Helpers to format and dump logs for debugging
+ *   - Persistent storage of the plant profile in NVS
+ */
+
 #include <stdint.h>
 #include <stddef.h>
 
@@ -8,14 +19,20 @@
 extern "C" {
 #endif
 
+/* ------------------------------------------------------------------------- */
+/* Plant profile                                                             */
+/* ------------------------------------------------------------------------- */
+
 /**
  * @brief Plant profile thresholds stored in NVS.
  *
- * All values are in the same units your sensors use:
+ * All values use the same units as the sensor conversion routines:
  *   - temp_min_x100 / temp_max_x100      : 0.01 °C
  *   - rh_min_x100 / rh_max_x100          : 0.01 %RH
  *   - moisture_min_mv / moisture_max_mv  : millivolts (from SEN0114)
- *   - lux_min / lux_max                  : estimated lux (int32)
+ *   - lux_min / lux_max                  : estimated lux (int32_t)
+ *
+ * This structure is stored as-is in NVS via the plant_profile_* API.
  */
 struct __attribute__((__packed__)) plant_profile {
     int32_t temp_min_x100;
@@ -31,16 +48,21 @@ struct __attribute__((__packed__)) plant_profile {
     int32_t lux_max;
 };
 
+/* ------------------------------------------------------------------------- */
+/* Log records                                                               */
+/* ------------------------------------------------------------------------- */
+
 /**
  * @brief Compact on-flash record for periodic sensor logging.
  *
- * This structure is written directly to NVS and contains:
- *   - Timestamp in seconds
+ * This structure is written directly to NVS. It contains:
+ *   - Timestamp in seconds since boot or epoch
  *   - Scaled temperature and humidity values
  *   - Raw 32-bit lux reading
  *   - Moisture reading in millivolts
  *
- * Conversion to human-friendly units should be done when printing/decoding.
+ * Conversion to human-friendly units (°C, %RH, etc.) is typically done
+ * at print / decode time.
  */
 struct __attribute__((__packed__)) log_record {
     uint32_t ts_s;        /**< Timestamp in seconds */
@@ -63,6 +85,10 @@ struct log_iter {
     uint8_t  started;  /**< Internal flag: iteration has started */
 };
 
+/* ------------------------------------------------------------------------- */
+/* Log storage API                                                           */
+/* ------------------------------------------------------------------------- */
+
 /**
  * @brief Initialize NVS-backed log storage.
  *
@@ -78,23 +104,24 @@ int log_store_init(void);
  * @brief Compute approximate capacity in number of records.
  *
  * Returns an estimate of how many records of the given size can be stored
- * in the configured NVS partition.
+ * in the configured NVS partition used for log records.
  *
- * @param record_size Size of each record in bytes (typically sizeof(struct log_record)).
+ * @param record_size Size of each record in bytes
+ *                    (typically sizeof(struct log_record)).
  *
- * @return Approximate number of records that can be stored.
+ * @return Approximate number of records that can be stored, or -1 on error.
  */
 size_t log_store_capacity_records(size_t record_size);
 
 /**
  * @brief Append one log record to flash.
  *
- * Writes a single log_record into NVS, advancing the internal sequence
- * (ring buffer) index. If @p out_key is non-NULL, the NVS key used is
- * returned to the caller.
+ * Writes a single log_record into NVS, advancing the internal ring-buffer
+ * sequence index. If @p out_key is non-NULL, the NVS key used is returned
+ * to the caller.
  *
- * @param rec      Pointer to the record to write.
- * @param out_key  Optional; if non-NULL, receives the NVS key used.
+ * @param rec      Pointer to the record to append.
+ * @param out_key  Optional pointer to receive the NVS key used.
  *
  * @return 0 on success, negative errno-style code on error.
  */
@@ -103,101 +130,109 @@ int log_store_append(const struct log_record *rec, uint16_t *out_key);
 /**
  * @brief Read the most recent log record.
  *
- * Retrieves the latest (most recently written) record from NVS. If
- * @p out_key is non-NULL, the key it was read from is returned.
+ * Reads the newest available record from NVS into @p out. If @p out_key
+ * is non-NULL, the corresponding NVS key is also returned.
  *
- * @param out      Pointer to buffer to receive the record.
- * @param out_key  Optional; if non-NULL, receives the record key.
+ * @param out      Pointer to buffer to receive the latest record.
+ * @param out_key  Optional pointer to receive the NVS key of the record.
  *
- * @return 0 on success;
- *         -ENOENT if there are no records stored;
- *         other negative errno-style code on error.
+ * @return 0 on success, -ENOENT if no records exist, or another
+ *         negative errno-style code on error.
  */
 int log_store_read_latest(struct log_record *out, uint16_t *out_key);
 
 /**
- * @brief Read a specific record by key.
+ * @brief Read a log record by NVS key.
  *
- * Attempts to read the record associated with @p key from NVS into @p out.
+ * Attempts to read a record stored at the provided NVS key.
  *
- * @param key  NVS key to read from.
- * @param out  Pointer to buffer to receive the record data.
+ * @param key  NVS key of the record to read.
+ * @param out  Pointer to buffer to receive the record.
  *
- * @return 0 on success;
- *         -ENOENT if no record exists at the given key;
- *         other negative errno-style code on error.
+ * @return 0 on success, -ENOENT if the key does not contain a record,
+ *         or another negative errno-style code on error.
  */
 int log_store_read_key(uint16_t key, struct log_record *out);
 
 /**
- * @brief Begin iteration over all stored records from oldest to newest.
+ * @brief Initialize an iterator to walk all records.
  *
- * Initializes @p it to iterate over the current set of log records in
- * chronological order. Use log_iter_next() to advance the iterator.
+ * Prepares @p it to iterate from the oldest valid record to the newest
+ * using log_iter_next().
  *
- * @param it  Pointer to iterator structure to initialize.
+ * @param it Pointer to iterator state to initialize.
  *
- * @return 0 on success;
- *         -ENOENT if there are no records to iterate over;
- *         other negative errno-style code on error.
+ * @return 0 on success, -ENOENT if the log is empty, or negative
+ *         errno-style code on error.
  */
 int log_iter_begin(struct log_iter *it);
 
 /**
- * @brief Get the next record during iteration.
+ * @brief Fetch the next record using an iterator.
  *
- * Continues an iteration started by log_iter_begin(), returning the next
- * record and its key (if @p out_key is non-NULL).
+ * Reads the next available record indicated by @p it. If @p out_key
+ * is non-NULL, the NVS key for the returned record is also provided.
+ * The iterator automatically skips empty / invalid slots.
  *
- * @param it       Pointer to iterator previously initialized by log_iter_begin().
- * @param out      Pointer to buffer to receive the next record.
- * @param out_key  Optional; if non-NULL, receives the record key.
+ * @param it      Pointer to iterator state.
+ * @param out     Pointer to buffer to receive the next record.
+ * @param out_key Optional pointer to receive the record's NVS key.
  *
- * @return 0 on success (one record returned in @p out);
- *         -ENOENT when no more records are available;
- *         other negative errno-style code on error.
+ * @return 0 on success, -ENOENT when no more records are available,
+ *         or negative errno-style code on error.
  */
-int log_iter_next(struct log_iter *it, struct log_record *out, uint16_t *out_key);
+int log_iter_next(struct log_iter *it,
+                  struct log_record *out,
+                  uint16_t *out_key);
 
 /**
- * @brief Erase all stored records and reset sequence state.
+ * @brief Erase and reformat the log storage partition.
  *
- * Formats the underlying NVS area used for logging and resets any
- * internal state so that subsequent appends start from a clean slate.
+ * Deletes all stored log records by erasing the underlying NVS area and
+ * resetting internal state.
  *
  * @return 0 on success, negative errno-style code on error.
  */
 int log_store_format(void);
 
 /**
- * @brief Format a log record for printing.
+ * @brief Format a single log_record into a printf-style line.
  *
- * Weak hook that can be overridden by the application to customize how
- * a log_record is printed when log_store_dump_to_printf() is called.
+ * Converts @p rec and its @p key into a human-readable textual
+ * representation suitable for logging or printing.
  *
- * @param rec  Pointer to the record being printed.
- * @param key  NVS key associated with this record.
+ * The actual output is implementation-defined but generally includes:
+ *   - key
+ *   - timestamp
+ *   - temperature / humidity
+ *   - lux and moisture values
+ *
+ * @param rec Pointer to the record to format.
+ * @param key NVS key corresponding to the record.
  */
 void log_store_format_record(const struct log_record *rec, uint16_t key);
 
 /**
- * @brief Dump all stored records using printf/logging.
+ * @brief Dump all log records to stdout using printf.
  *
- * Iterates over all records in chronological order and prints them using
- * log_store_format_record().
+ * Iterates over the entire log (from oldest to newest) and prints each
+ * record via log_store_format_record().
  *
- * @return Number of records printed on success;
- *         negative errno-style code on error (e.g., -ENOENT if empty).
+ * @return 0 on success, -ENOENT if no records exist, or another
+ *         negative errno-style code on error.
  */
 int log_store_dump_to_printf(void);
 
+/* ------------------------------------------------------------------------- */
+/* Plant profile API                                                         */
+/* ------------------------------------------------------------------------- */
+
 /**
- * @brief Save the current plant profile to NVS.
+ * @brief Save the plant profile to NVS.
  *
- * Writes the provided plant profile structure to NVS so that it can be
- * restored on subsequent boots.
+ * Overwrites any previously stored profile with the contents of @p p.
  *
- * @param p  Pointer to plant_profile data to save.
+ * @param p Pointer to the plant profile to persist.
  *
  * @return 0 on success, negative errno-style code on error.
  */
@@ -206,9 +241,9 @@ int plant_profile_save(const struct plant_profile *p);
 /**
  * @brief Load plant profile from NVS.
  *
- * Attempts to read a previously-saved plant profile from NVS into @p out.
+ * Attempts to read a previously-saved plant profile into @p out.
  *
- * @param out  Pointer to buffer to receive the loaded profile.
+ * @param out Pointer to buffer to receive the loaded profile.
  *
  * @return 0 on success (profile loaded into @p out);
  *         -ENOENT if no profile has been stored yet;
@@ -217,13 +252,15 @@ int plant_profile_save(const struct plant_profile *p);
 int plant_profile_load(struct plant_profile *out);
 
 /**
- * @brief Load plant profile, or initialize defaults and save them.
+ * @brief Load plant profile, or create and save a default.
  *
- * Attempts to load the plant profile from NVS. If none is found, a
- * default profile is initialized and saved back to NVS. On success,
- * @p out always contains a valid profile.
+ * Tries to load an existing profile via plant_profile_load(). If none
+ * exists (-ENOENT), a default profile is created, saved to NVS, and
+ * returned via @p out.
  *
- * @param out  Pointer to buffer to receive the loaded or default profile.
+ * On successful return, @p out always contains a valid profile.
+ *
+ * @param out Pointer to buffer to receive the loaded or default profile.
  *
  * @return 0 on success (profile loaded or default created and saved);
  *         negative errno-style code on error (e.g., NVS/flash issues).

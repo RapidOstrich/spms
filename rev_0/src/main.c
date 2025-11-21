@@ -1,25 +1,24 @@
+/**
+ * @file
+ * @brief Main entry point for the Smart Plant Monitoring System (SPMS).
+ *
+ * Responsibilities:
+ *   - Initialize LEDs, sensors, log storage, plant profile, and BLE stack
+ *   - Periodically sample all sensors and evaluate against the plant profile
+ *   - Periodically log samples to flash via log_store
+ *   - Feed a 1 Hz tick into the BLE layer for notifications
+ */
+
 #include <stdint.h>
 #include <string.h>
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
-/* ------------------------------------------------------------------------- */
-/* Logging module                                                            */
-/* ------------------------------------------------------------------------- */
-
-LOG_MODULE_REGISTER(SPMS_MAIN, LOG_LEVEL_INF);
-
-/* ------------------------------------------------------------------------- */
-/* Board Config Dependencies                                                 */
-/* ------------------------------------------------------------------------- */
 #include <zephyr/devicetree.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 
-/* ------------------------------------------------------------------------- */
-/* Local Includes                                                            */
-/* ------------------------------------------------------------------------- */
 #include "sen0114.h"
 #include "sen0390.h"
 #include "sen0546.h"
@@ -27,21 +26,24 @@ LOG_MODULE_REGISTER(SPMS_MAIN, LOG_LEVEL_INF);
 #include "spms_ble.h"
 #include "spms_sensors.h"
 
+LOG_MODULE_REGISTER(SPMS_MAIN, LOG_LEVEL_INF);
+
 /* ------------------------------------------------------------------------- */
 /* Plant profile (loaded from NVS)                                           */
 /* ------------------------------------------------------------------------- */
 
-/* Non-static: referenced from spms_ble.c via extern */
+/* Non-static: referenced from spms_ble.c via extern. */
 struct plant_profile g_profile;
 
-/* Latest sensor snapshot (for logging + BLE) */
+/* Latest sensor snapshot (for logging + BLE). */
 static struct spms_sensor_snapshot g_sensors;
 
 /* ------------------------------------------------------------------------- */
 /* LEDs                                                                      */
 /* ------------------------------------------------------------------------- */
-/* LED1 (board marking) -> led0 alias: connection indicator
- * LED2 (board marking) -> led1 alias: log flash
+/*
+ * LED1 (board marking) -> led0 alias: connection indicator.
+ * LED2 (board marking) -> led1 alias: log flash indicator.
  */
 
 #define LED_CONN_NODE DT_ALIAS(led0)
@@ -62,18 +64,26 @@ static const struct gpio_dt_spec led_log  = GPIO_DT_SPEC_GET(LED_LOG_NODE, gpios
 /* Logging helper (once per minute) + LED2 flash                             */
 /* ------------------------------------------------------------------------- */
 
+/**
+ * @brief Append the current sensor snapshot to flash and blink LED2.
+ *
+ * Uses g_sensors as the source of data and appends a log_record to NVS via
+ * log_store_append(). On success, LED2 is flashed briefly as a visual
+ * logging indicator.
+ *
+ * @return 0 on success, negative errno-style code on failure.
+ */
 static int log_current_record(void)
 {
     struct log_record rec;
     uint16_t key = 0;
 
-    /* Timestamp in seconds (monotonic is fine for this use case) */
+    /* Timestamp in seconds (monotonic uptime is sufficient here). */
     rec.ts_s        = (uint32_t)(k_uptime_get() / 1000U);
     rec.t_raw       = g_sensors.temp_c_x100;
     rec.rh_raw      = g_sensors.rh_x100;
     rec.lux_raw     = g_sensors.lux_raw;
     rec.moisture_mv = g_sensors.moisture_mv;
-
 
     int rc = log_store_append(&rec, &key);
     if (rc == 0) {
@@ -82,7 +92,7 @@ static int log_current_record(void)
                 key, rec.ts_s, rec.t_raw, rec.rh_raw,
                 (unsigned int)rec.lux_raw, rec.moisture_mv);
 
-        /* Flash LED2 briefly to indicate a log event */
+        /* Flash LED2 briefly to indicate a log event. */
         gpio_pin_set_dt(&led_log, 1);
         k_sleep(K_MSEC(100));
         gpio_pin_set_dt(&led_log, 0);
@@ -103,7 +113,7 @@ int main(void)
 
     LOG_INF("SPMS_REV_0");
 
-    /* Initialize LEDs */
+    /* Initialize LEDs. */
     if (!device_is_ready(led_conn.port)) {
         LOG_ERR("LED connection port not ready!");
         return 0;
@@ -116,35 +126,35 @@ int main(void)
     gpio_pin_configure_dt(&led_conn, GPIO_OUTPUT_INACTIVE);
     gpio_pin_configure_dt(&led_log, GPIO_OUTPUT_INACTIVE);
 
-    /* Initialize sensor subsystem (I2C + basic checks) */
+    /* Initialize sensor subsystem (I2C + basic checks). */
     err = spms_sensors_init();
     if (err) {
         LOG_ERR("spms_sensors_init failed (err %d)", err);
-        /* Optionally: return 0; for now, continue to allow BLE/logging startup */
+        /* Continue to allow BLE/logging init even if sensors fail. */
     }
 
-    /* Initialize log_store (NVS-backed flash storage) */
+    /* Initialize log_store (NVS-backed flash storage). */
     err = log_store_init();
     if (err) {
         LOG_ERR("log_store_init failed (err %d)", err);
-        /* Keep running BLE/sensor even if logging is broken */
+        /* Keep running BLE/sensors even if logging is broken. */
     } else {
         size_t cap = log_store_capacity_records(sizeof(struct log_record));
         LOG_INF("log_store initialized, approx capacity ~%u records",
                 (unsigned int)cap);
     }
 
-    /* Load or initialize plant profile in NVS */
+    /* Load or initialize plant profile in NVS. */
     err = plant_profile_load_or_init(&g_profile);
     if (err) {
         LOG_ERR("plant_profile_load_or_init failed (err %d)", err);
     }
 
-    /* Initialize Bluetooth stack + GATT services + advertising */
+    /* Initialize Bluetooth stack + GATT services + advertising. */
     err = spms_ble_init(&led_conn);
     if (err) {
         LOG_ERR("spms_ble_init failed (err %d)", err);
-        /* Optionally: return 0; and run without BLE */
+        /* Application could choose to continue without BLE. */
     }
 
     int seconds_since_sensor = 0;
@@ -153,11 +163,11 @@ int main(void)
     while (1) {
         k_sleep(K_SECONDS(1));
 
-        /* Periodic timing */
+        /* Periodic timing. */
         seconds_since_sensor++;
         seconds_since_log++;
 
-        /* Every 5 seconds: read sensors + compare against profile */
+        /* Every 5 seconds: read sensors + compare against profile. */
         if (seconds_since_sensor >= 5) {
             seconds_since_sensor = 0;
 
@@ -167,13 +177,13 @@ int main(void)
             }
         }
 
-        /* Every 60 seconds: log current sample to NVS */
+        /* Every 60 seconds: log current sample to NVS. */
         if (seconds_since_log >= 60) {
             seconds_since_log = 0;
             log_current_record();
         }
 
-        /* 1 Hz BLE maintenance + notifications using latest sensor values */
+        /* 1 Hz BLE maintenance + notifications using latest sensor values. */
         spms_ble_tick_1s(g_sensors.temp_c_x100, g_sensors.rh_x100);
     }
 
