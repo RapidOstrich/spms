@@ -1,4 +1,0 @@
-storage:
-  address: 0x00078000   # start of the last 32 KiB in 512 KiB flash
-  size:    0x00008000   # 32 KiB
-  region:  flash_primary
