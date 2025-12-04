@@ -183,8 +183,12 @@ int main(void)
             log_current_record();
         }
 
-        /* 1 Hz BLE maintenance + notifications using latest sensor values. */
-        spms_ble_tick_1s(g_sensors.temp_c_x100, g_sensors.rh_x100);
+        /* 1 Hz BLE maintenance + notifications using latest sensor values */
+        spms_ble_tick_1s(g_sensors.temp_c_x100,
+                        g_sensors.rh_x100,
+                        g_sensors.lux_est,
+                        g_sensors.moisture_mv);
+
     }
 
     return 0;

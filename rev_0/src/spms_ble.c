@@ -54,10 +54,14 @@ static bool     debug_notify_enabled;
 
 static bool     temp_notify_enabled;
 static bool     rh_notify_enabled;
+static bool     lux_notify_enabled;
+static bool     moisture_notify_enabled;
 
 /* Latest sensor values (cached for GATT reads/notifications) */
 static int16_t  last_temp_c_x100;
 static uint16_t last_rh_x100;
+static int32_t  last_lux_est;
+static int32_t  last_moisture_mv;
 
 /* ------------------------------------------------------------------------- */
 /* Log dump state                                                            */
@@ -101,6 +105,8 @@ static const struct bt_data sd[] = {
  * Debug chr: 12345678-1234-5678-1234-56789abcdef1
  * Temp chr:  12345678-1234-5678-1234-56789abcdef2
  * RH chr:    12345678-1234-5678-1234-56789abcdef3
+ * Lux chr:   12345678-1234-5678-1234-56789abcdef4
+ * Moist chr: 12345678-1234-5678-1234-56789abcdef5
  */
 #define BT_UUID_SPMS_SERVICE_VAL \
     BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcdef0ULL)
@@ -114,6 +120,12 @@ static const struct bt_data sd[] = {
 #define BT_UUID_SPMS_RH_CHAR_VAL \
     BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcdef3ULL)
 
+#define BT_UUID_SPMS_LUX_CHAR_VAL \
+    BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcdef4ULL)
+
+#define BT_UUID_SPMS_MOIST_CHAR_VAL \
+    BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcdef5ULL)
+
 static struct bt_uuid_128 spms_service_uuid = BT_UUID_INIT_128(
     BT_UUID_SPMS_SERVICE_VAL);
 static struct bt_uuid_128 spms_debug_uuid = BT_UUID_INIT_128(
@@ -122,6 +134,10 @@ static struct bt_uuid_128 spms_temp_uuid = BT_UUID_INIT_128(
     BT_UUID_SPMS_TEMP_CHAR_VAL);
 static struct bt_uuid_128 spms_rh_uuid = BT_UUID_INIT_128(
     BT_UUID_SPMS_RH_CHAR_VAL);
+static struct bt_uuid_128 spms_lux_uuid = BT_UUID_INIT_128(
+    BT_UUID_SPMS_LUX_CHAR_VAL);
+static struct bt_uuid_128 spms_moist_uuid = BT_UUID_INIT_128(
+    BT_UUID_SPMS_MOIST_CHAR_VAL);
 
 /*
  * Plant profile service UUIDs:
@@ -196,6 +212,16 @@ static ssize_t read_u16(struct bt_conn *conn,
 {
     const uint16_t *value = attr->user_data;
 
+    return bt_gatt_attr_read(conn, attr, buf, len, offset,
+                             value, sizeof(*value));
+}
+
+static ssize_t read_s32(struct bt_conn *conn,
+                        const struct bt_gatt_attr *attr,
+                        void *buf, uint16_t len,
+                        uint16_t offset)
+{
+    const int32_t *value = attr->user_data;
     return bt_gatt_attr_read(conn, attr, buf, len, offset,
                              value, sizeof(*value));
 }
@@ -295,6 +321,21 @@ static void rh_ccc_cfg_changed(const struct bt_gatt_attr *attr,
     rh_notify_enabled = (value == BT_GATT_CCC_NOTIFY);
     LOG_INF("RH notifications %s",
             rh_notify_enabled ? "enabled" : "disabled");
+}
+
+static void lux_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+    lux_notify_enabled = (value == BT_GATT_CCC_NOTIFY);
+    LOG_INF("Lux notifications %s",
+            lux_notify_enabled ? "enabled" : "disabled");
+}
+
+static void moisture_ccc_cfg_changed(const struct bt_gatt_attr *attr,
+                                     uint16_t value)
+{
+    moisture_notify_enabled = (value == BT_GATT_CCC_NOTIFY);
+    LOG_INF("Moisture notifications %s",
+            moisture_notify_enabled ? "enabled" : "disabled");
 }
 
 static void log_data_ccc_cfg_changed(const struct bt_gatt_attr *attr,
@@ -425,6 +466,26 @@ BT_GATT_SERVICE_DEFINE(spms_svc,
                            read_u16, NULL, &last_rh_x100),
     BT_GATT_CUD("Humidity (0.01 %RH)", BT_GATT_PERM_READ),
     BT_GATT_CCC(rh_ccc_cfg_changed,
+                BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+
+    /* Lux: read / notify (estimated lux, int32) */
+    BT_GATT_CHARACTERISTIC(&spms_lux_uuid.uuid,
+                           BT_GATT_CHRC_READ |
+                           BT_GATT_CHRC_NOTIFY,
+                           BT_GATT_PERM_READ,
+                           read_s32, NULL, &last_lux_est),
+    BT_GATT_CUD("Lux (estimated)", BT_GATT_PERM_READ),
+    BT_GATT_CCC(lux_ccc_cfg_changed,
+                BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+
+    /* Moisture: read / notify (mV, int32) */
+    BT_GATT_CHARACTERISTIC(&spms_moist_uuid.uuid,
+                           BT_GATT_CHRC_READ |
+                           BT_GATT_CHRC_NOTIFY,
+                           BT_GATT_PERM_READ,
+                           read_s32, NULL, &last_moisture_mv),
+    BT_GATT_CUD("Moisture (mV)", BT_GATT_PERM_READ),
+    BT_GATT_CCC(moisture_ccc_cfg_changed,
                 BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 );
 
@@ -593,30 +654,47 @@ int spms_ble_init(const struct gpio_dt_spec *conn_led)
     return 0;
 }
 
-void spms_ble_tick_1s(int16_t temp_c_x100, uint16_t rh_x100)
+void spms_ble_tick_1s(int16_t  temp_c_x100,
+                      uint16_t rh_x100,
+                      int32_t  lux_est,
+                      int32_t  moisture_mv)
 {
-    /* Update cached sensor values backing the GATT attributes. */
+    /* Update cached sensor values backing the GATT attributes */
     last_temp_c_x100 = temp_c_x100;
     last_rh_x100     = rh_x100;
+    last_lux_est     = lux_est;
+    last_moisture_mv = moisture_mv;
 
-    /* Demo counter for debug characteristic. */
+    /* Demo counter for debug characteristic */
     debug_value++;
 
     if (debug_notify_enabled) {
-        /* Debug value at attr index 2. */
+        /* Debug value at attr index 2 */
         bt_gatt_notify(NULL, &spms_svc.attrs[2],
                        &debug_value, sizeof(debug_value));
     }
 
     if (temp_notify_enabled) {
-        /* Temp value at attr index 6. */
+        /* Temp value at attr index 6 */
         bt_gatt_notify(NULL, &spms_svc.attrs[6],
                        &last_temp_c_x100, sizeof(last_temp_c_x100));
     }
 
     if (rh_notify_enabled) {
-        /* RH value at attr index 10. */
+        /* RH value at attr index 10 */
         bt_gatt_notify(NULL, &spms_svc.attrs[10],
                        &last_rh_x100, sizeof(last_rh_x100));
+    }
+
+    if (lux_notify_enabled) {
+        /* Lux value at attr index 14 */
+        bt_gatt_notify(NULL, &spms_svc.attrs[14],
+                       &last_lux_est, sizeof(last_lux_est));
+    }
+
+    if (moisture_notify_enabled) {
+        /* Moisture value at attr index 18 */
+        bt_gatt_notify(NULL, &spms_svc.attrs[18],
+                       &last_moisture_mv, sizeof(last_moisture_mv));
     }
 }

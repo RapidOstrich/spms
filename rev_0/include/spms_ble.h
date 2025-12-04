@@ -41,17 +41,23 @@ extern "C" {
 int spms_ble_init(const struct gpio_dt_spec *conn_led);
 
 /**
- * @brief 1 Hz periodic Bluetooth maintenance hook.
+ * @brief Periodic 1 Hz BLE maintenance.
  *
- * Call this function once per second. It:
- *   - Increments a debug counter and sends notification if enabled
- *   - Pushes the latest temperature and humidity values to the BLE client
- *     if the client has subscribed to those characteristics
+ * Call this once per second from the main loop. It:
+ *   - Updates cached sensor values used by GATT reads
+ *   - Increments a debug counter and sends notifications if enabled
+ *   - Notifies the latest sensor values if the client has
+ *     subscribed to those characteristics.
  *
  * @param temp_c_x100 Latest temperature in 0.01 °C units.
  * @param rh_x100     Latest relative humidity in 0.01 %RH units.
+ * @param lux_est     Latest estimated illuminance in lux.
+ * @param moisture_mv Latest soil moisture in millivolts.
  */
-void spms_ble_tick_1s(int16_t temp_c_x100, uint16_t rh_x100);
+void spms_ble_tick_1s(int16_t  temp_c_x100,
+                      uint16_t rh_x100,
+                      int32_t  lux_est,
+                      int32_t  moisture_mv);
 
 #ifdef __cplusplus
 }
